@@ -5,6 +5,33 @@ import snowflake.connector
 import re
 
 st.set_page_config(page_title="CRM 매장 SMS 모수 추출", layout="wide")
+
+# --- 비밀번호 게이트 (Secrets의 [app].password 사용) ---
+def require_password():
+    # Secrets에 비번이 없으면 게이트 생략
+    if "app" not in st.secrets or not st.secrets["app"].get("password"):
+        return
+    # 이미 통과했으면 생략
+    if st.session_state.get("pw_ok"):
+        return
+
+    with st.form("pw_form", clear_on_submit=False):
+        pwd = st.text_input("비밀번호를 입력하세요", type="password")
+        submitted = st.form_submit_button("입장")
+
+    if submitted:
+        if pwd == st.secrets["app"]["password"]:
+            st.session_state["pw_ok"] = True
+            st.experimental_rerun()
+        else:
+            st.error("비밀번호가 틀렸습니다.")
+            st.stop()
+    else:
+        # 제출 전에는 아래 본문 렌더링 막기
+        st.stop()
+
+require_password()  # ⬅️ 반드시 상단에서 호출
+
 st.title("📊 CRM 매장 SMS 모수 추출 대시보드")
 
 # ▼▼ 회사 스키마에 맞게 필요시 수정: ACCOUNT 테이블의 CID 컬럼명 ▼▼
