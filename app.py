@@ -22,7 +22,11 @@ def require_password():
     if submitted:
         if pwd == st.secrets["app"]["password"]:
             st.session_state["pw_ok"] = True
-            st.experimental_rerun()
+            # 새/구버전 Streamlit 모두 대응
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
         else:
             st.error("비밀번호가 틀렸습니다.")
             st.stop()
@@ -99,7 +103,6 @@ do_search = st.button("검색", type="primary")
 
 # -----------------------------
 # 검색 로직: 매장명/번호 부분일치 + AND/OR 선택
-# (회원 1명 이상 조건은 ACCOUNT 집계로 자연 충족)
 # -----------------------------
 if do_search:
     if not kw:
@@ -185,7 +188,7 @@ if not sel_df.empty:
     st.dataframe(sel_df, use_container_width=True)
 
     total_cnt = int(sel_df["member_cnt"].sum())
-    st.success(f"✅ 총 모수: {total_cnt:,} 명")  # 화면에는 합계만 표시 (CID 미노출)
+    st.success(f"✅ 총 모수: {total_cnt:,} 명")
 
     # 선택 매장 요약 CSV (코드/이름/모수)
     csv = sel_df.to_csv(index=False).encode("utf-8-sig")
@@ -200,7 +203,6 @@ if not sel_df.empty:
                 st.info("선택된 매장이 없습니다.")
             else:
                 placeholders = ",".join(["%s"] * len(codes))
-                # ACCOUNT에서 바로 추출 + 빈값/NULL 제거 (삼중따옴표 없이 안전한 조립)
                 sql_cid = (
                     "SELECT DISTINCT A.{cid} AS CID "
                     "FROM FNF.CRM_SALESFORCEPROD.ACCOUNT A "
@@ -219,7 +221,7 @@ if not sel_df.empty:
                     st.info("선택 매장에서 조건을 만족하는 CID가 없습니다.")
                 else:
                     st.write(f"CID 개수: **{len(cid_df):,}**")
-                    cid_csv = cid_df.to_csv(index=False).encode("utf-8-sig")  # 한 컬럼: CID
+                    cid_csv = cid_df.to_csv(index=False).encode("utf-8-sig")
                     st.download_button("CID CSV 다운로드", data=cid_csv, file_name="cid_list.csv", mime="text/csv")
         except Exception as e:
             st.exception(e)
