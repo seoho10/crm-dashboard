@@ -100,7 +100,16 @@ mode = st.radio("검색 토큰 결합 방식", ["하나라도 포함(OR)", "모�
 # 구매 집계 기간(구매자 집계에만 적용)
 default_start = date.today() - timedelta(days=30)
 default_end = date.today()
-buy_start, buy_end = st.date_input("구매 기간(구매 인원 집계에 적용)", (default_start, default_end))
+
+col1, col2 = st.columns([1, 2])
+with col1:
+    all_time = st.checkbox("전체기간(제한 없음)", value=False)
+with col2:
+    buy_start, buy_end = st.date_input(
+        "구매 기간(구매 인원 집계에 적용)",
+        (default_start, default_end),
+        disabled=all_time  # 전체기간이면 비활성화
+    )
 
 do_search = st.button("검색", type="primary")
 
@@ -122,8 +131,12 @@ if do_search:
                 token_params.extend([like, like])
             token_filter_sql = (f" AND ({joiner.join(conds)})") if conds else ""
 
-            # 파라미터: [brand] + token(M) + [brand, start, end] + token(P)
-            params = [brand] + token_params + [brand, str(buy_start), str(buy_end)] + token_params
+            # 기간 필터 SQL/파라미터 구성 (전체기간이면 SALE_DT 필터 미적용)
+            sale_dt_filter_sql = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
+            date_params = [] if all_time else [str(buy_start), str(buy_end)]
+
+            # 파라미터: [brand] + token(M) + [brand] + date_params + token(P)
+            params = [brand] + token_params + [brand] + date_params + token_params
 
             sql = f"""
 WITH M AS (
@@ -156,7 +169,7 @@ P AS (
     ON A.{CID_COLUMN} = SL.CUST_ID
    AND A.joinbrand__c = SL.BRD_CD
   WHERE SL.BRD_CD = %s
-    AND SL.SALE_DT BETWEEN %s AND %s
+    {sale_dt_filter_sql}
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
     AND COALESCE(A.status_cd__c, '') <> 'D'
@@ -239,10 +252,11 @@ sel_df = st.session_state.selected_df
 if not sel_df.empty:
     st.subheader("누적 선택 매장")
 
-    # 합계 행 추가
+    # 합계 행 + 상단 합계/비용 표시
     total_member = int(sel_df["member_cnt"].sum())
     total_buyer_only = int(sel_df["purchaser_cnt"].sum())
     total_sum = int(sel_df["total_cnt"].sum())
+
     total_row = pd.DataFrame(
         {
             "store_code": ["합계"],
@@ -256,6 +270,11 @@ if not sel_df.empty:
     st.dataframe(sel_show, use_container_width=True)
 
     st.success(f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}")
+
+    # ② LMS 발송 비용(23.5원 × 합계)
+    LMS_UNIT = 23.5
+    est_cost = total_sum * LMS_UNIT
+    st.info(f"💬 LMS 발송 비용(예상): {total_sum:,} × {LMS_UNIT}원 = **{est_cost:,.1f}원**")
 
     # 선택 매장 요약 CSV
     csv = sel_df.to_csv(index=False).encode("utf-8-sig")
@@ -282,7 +301,11 @@ if not sel_df.empty:
                 st.info("선택된 매장이 없습니다.")
             else:
                 placeholders = ",".join(["%s"] * len(codes))
-                # 선택된 매장에 대해서만 M/P/PO를 다시 구성(동일 필터 + 기간)
+
+                # 기간 필터 SQL/파라미터 (검색과 동일한 all_time 로직 유지)
+                sale_dt_filter_uid = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
+                date_params_uid = [] if all_time else [str(buy_start), str(buy_end)]
+
                 sql_uid = (
                     f"""
 WITH M AS (
@@ -314,7 +337,7 @@ P AS (
    AND A.joinbrand__c = SL.BRD_CD
   WHERE SL.BRD_CD = %s
     AND S.SHOP_ID IN ({placeholders})
-    AND SL.SALE_DT BETWEEN %s AND %s
+    {sale_dt_filter_uid}
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
     AND COALESCE(A.status_cd__c, '') <> 'D'
@@ -332,30 +355,17 @@ PO AS (
 """
                     +
                     (
-                        # 가입자만
                         f"SELECT DISTINCT CID AS USER_ID FROM M"
                         if cohort.startswith("가입자")
-                        # 구매자만(가입 중복 제외)
                         else f"SELECT DISTINCT CID AS USER_ID FROM PO"
                         if cohort.startswith("구매자")
-                        # 합계(유니온)
-                        else
-                        "SELECT DISTINCT CID AS USER_ID FROM ("
-                        "  SELECT CID FROM M "
-                        "  UNION ALL "
-                        "  SELECT CID FROM PO"
-                        ") U"
+                        else "SELECT DISTINCT CID AS USER_ID FROM (SELECT CID FROM M UNION ALL SELECT CID FROM PO) U"
                     )
                 )
 
-                if cohort.startswith("가입자"):
-                    params = tuple([brand] + codes + [brand] + codes + [str(buy_start), str(buy_end)])
-                elif cohort.startswith("구매자"):
-                    params = tuple([brand] + codes + [brand] + codes + [str(buy_start), str(buy_end)])
-                else:  # 합계(유니온)
-                    params = tuple([brand] + codes + [brand] + codes + [str(buy_start), str(buy_end)])
-
-                uid_df = run_query(sql_uid, params)
+                # 파라미터: [brand] + codes(M) + [brand] + codes(P) + date_params_uid
+                params_uid = [brand] + codes + [brand] + codes + date_params_uid
+                uid_df = run_query(sql_uid, tuple(params_uid))
 
                 if uid_df.empty:
                     st.info("선택 조건에 해당하는 USER_ID가 없습니다.")
@@ -377,5 +387,6 @@ PO AS (
 
 st.caption(
     "※ 화면엔 합계만 표시 · USER_ID(CID) 는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / "
-    "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / SUM=가입 ∪ 구매(가입중복제외)"
+    "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / SUM=가입 ∪ 구매(가입중복제외) / "
+    "LMS 비용은 1건당 23.5원 기준 예상치"
 )
