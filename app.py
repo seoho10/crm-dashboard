@@ -133,6 +133,7 @@ if do_search:
                 "WHERE A.joinbrand__c = %s "
                 "  AND A.sleep_yn__c = 'N' "
                 "  AND A.recv_sms__c = 'Y' "
+                "  AND COALESCE(A.status_cd__c, '') <> 'D' "   # ⬅️ 탈퇴(D) 제외
                 f"{where_extra} "
                 "GROUP BY 1, 2 "
                 "ORDER BY MEMBER_CNT DESC"
@@ -209,6 +210,7 @@ if not sel_df.empty:
                     "WHERE A.joinbrand__c = %s "
                     "AND A.sleep_yn__c = 'N' "
                     "AND A.recv_sms__c = 'Y' "
+                    "AND COALESCE(A.status_cd__c, '') <> 'D' "  # ⬅️ 탈퇴(D) 제외
                     "AND A.{cid} IS NOT NULL "
                     "AND LENGTH(TRIM(A.{cid})) > 0 "
                     f"AND A.joinstore__c IN ({placeholders})"
@@ -226,4 +228,4 @@ if not sel_df.empty:
         except Exception as e:
             st.exception(e)
 
-st.caption("※ 화면엔 합계만 표시 · CID는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) / 선택 누적 & AND·OR 검색 지원")
+st.caption("※ 화면엔 합계만 표시 · CID는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / 선택 누적 & AND·OR 검색 지원")
