@@ -54,10 +54,10 @@ def get_connection():
     return snowflake.connector.connect(
         user=cfg["user"],
         password=cfg["password"],
-        account=cfg["account"],      # 예: cixxjbf-wp67697
-        warehouse=cfg["warehouse"],  # 예: DEV_WH
-        database=cfg["database"],    # 예: FNF
-        schema=cfg["schema"],        # 예: CRM_MEMBER
+        account=cfg["account"],
+        warehouse=cfg["warehouse"],
+        database=cfg["database"],
+        schema=cfg["schema"],
         role=cfg.get("role"),
     )
 
@@ -91,10 +91,9 @@ with st.expander("🔌 연결 테스트"):
             st.exception(e)
 
 # -----------------------------
-# 검색 UI (순서 변경: 브랜드 → 기간 → 키워드 → 검색)
+# 검색 UI (브랜드 다중선택 → 기간 → 키워드 → 검색)
 # -----------------------------
-brand = st.radio("브랜드 선택", ["X", "M", "I"], index=0, horizontal=True)
-
+brands = st.multiselect("브랜드 선택(복수 선택 가능)", ["X", "M", "I"], default=["X"])
 # 기간 먼저
 default_start = date.today() - timedelta(days=30)
 default_end = date.today()
@@ -107,8 +106,7 @@ with col2:
         (default_start, default_end),
         disabled=all_time
     )
-
-# 그 다음 키워드
+# 키워드
 kw = st.text_input("매장 관련 정보를 입력하세요! 지역, 매장명, 매장코드 등").strip()
 
 # 검색 버튼
@@ -118,12 +116,15 @@ do_search = st.button("검색", type="primary")
 # 검색 로직
 # -----------------------------
 if do_search:
-    if not kw:
+    if not brands:
+        st.warning("브랜드를 1개 이상 선택해 주세요.")
+        st.session_state.results = pd.DataFrame()
+    elif not kw:
         st.warning("키워드를 입력해 주세요.")
         st.session_state.results = pd.DataFrame()
     else:
         try:
-            # 토큰 분해 (공백/쉼표), 내부 결합은 항상 OR
+            # 키워드 토큰 (항상 OR)
             tokens = [t.strip() for t in re.split(r"[,\s]+", kw) if t.strip()]
             joiner = " OR "
             conds, token_params = [], []
@@ -133,11 +134,20 @@ if do_search:
                 token_params.extend([like, like])
             token_filter_sql = (f" AND ({joiner.join(conds)})") if conds else ""
 
+            # 브랜드 IN 절
+            brand_ph = ",".join(["%s"] * len(brands))
+
+            # 기간 필터
             sale_dt_filter_sql = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
             date_params = [] if all_time else [str(buy_start), str(buy_end)]
 
-            # 파라미터: [brand] + token(M) + [brand] + date_params + token(P)
-            params = [brand] + token_params + [brand] + date_params + token_params
+            # 파라미터: M용 [brands] + token(M) + P용 [brands] + date + token(P)
+            params = []
+            params.extend(brands)               # M
+            params.extend(token_params)         # token(M)
+            params.extend(brands)               # P
+            params.extend(date_params)          # dates
+            params.extend(token_params)         # token(P)
 
             sql = f"""
 WITH M AS (
@@ -149,10 +159,10 @@ WITH M AS (
   LEFT JOIN FNF.PRCS.DB_SHOP S
     ON A.joinstore__c = S.SHOP_ID
    AND A.joinbrand__c = S.BRD_CD
-  WHERE A.joinbrand__c = %s
+  WHERE A.joinbrand__c IN ({brand_ph})
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
-    AND COALESCE(A.status_cd__c, '') <> 'D'
+    AND A.status_cd__c = 'R'               -- ✅ R만 포함
     AND A.{CID_COLUMN} IS NOT NULL
     AND LENGTH(TRIM(A.{CID_COLUMN})) > 0
     {token_filter_sql}
@@ -169,11 +179,11 @@ P AS (
   JOIN FNF.CRM_SALESFORCEPROD.ACCOUNT A
     ON A.{CID_COLUMN} = SL.CUST_ID
    AND A.joinbrand__c = SL.BRD_CD
-  WHERE SL.BRD_CD = %s
+  WHERE SL.BRD_CD IN ({brand_ph})
     {sale_dt_filter_sql}
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
-    AND COALESCE(A.status_cd__c, '') <> 'D'
+    AND A.status_cd__c = 'R'               -- ✅ R만 포함
     AND A.{CID_COLUMN} IS NOT NULL
     AND LENGTH(TRIM(A.{CID_COLUMN})) > 0
     {token_filter_sql}
@@ -213,13 +223,8 @@ results = st.session_state.results
 if not results.empty:
     st.subheader("검색 결과 (스토어코드 / 매장명 / 가입 / 구매(가입제외) / 합계)")
 
-    # 표시 라벨
     results_display = results.rename(
-        columns={
-            "member_cnt": "가입",
-            "purchaser_cnt": "구매(가입제외)",
-            "total_cnt": "합계",
-        }
+        columns={"member_cnt": "가입", "purchaser_cnt": "구매(가입제외)", "total_cnt": "합계"}
     )
     st.dataframe(results_display, use_container_width=True)
 
@@ -262,7 +267,7 @@ sel_df = st.session_state.selected_df
 if not sel_df.empty:
     st.subheader("누적 선택 매장")
 
-    # 표는 한글 라벨로 노출 (가입/구매(가입제외)/합계)
+    # 표는 한글 라벨로 노출
     display_df = sel_df.copy()
     display_df["가입"] = display_df["member_cnt"].astype(int)
     display_df["구매(가입제외)"] = display_df["purchaser_cnt"].astype(int)
@@ -275,13 +280,8 @@ if not sel_df.empty:
 
     # 합계 행
     sum_row = pd.DataFrame(
-        {
-            "store_code": ["합계"],
-            "shop_name": ["-"],
-            "가입": [total_member],
-            "구매(가입제외)": [total_buyer_only],
-            "합계": [total_sum],
-        }
+        {"store_code": ["합계"], "shop_name": ["-"], "가입": [total_member],
+         "구매(가입제외)": [total_buyer_only], "합계": [total_sum]}
     )
 
     # 문자 발송비용 행 (합계 × 23.5원)
@@ -300,29 +300,17 @@ if not sel_df.empty:
     sel_show = pd.concat([display_df[render_cols], sum_row, cost_row], ignore_index=True)
     st.dataframe(sel_show, use_container_width=True)
 
-    # 상단 요약 및 비용 총액
-    st.success(
-        f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}"
-    )
+    # 상단 요약 및 비용 총액 안내
+    st.success(f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}")
     st.info(f"💬 LMS 발송 비용(예상): 합계 {total_sum:,} × 23.5원 = **{total_sum * LMS_UNIT:,.1f}원**")
 
     # 선택 매장 요약 CSV (원본 컬럼 유지)
     csv = sel_df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "선택 매장 리스트 CSV",
-        data=csv,
-        file_name="sms_target_counts_selected.csv",
-        mime="text/csv"
-    )
+    st.download_button("선택 매장 리스트 CSV", data=csv, file_name="sms_target_counts_selected.csv", mime="text/csv")
 
     st.divider()
     st.subheader("📤 선택 매장 user_id(CID) 추출")
-    cohort = st.radio(
-        "어떤 세트를 추출할까요?",
-        ["가입자", "구매자(가입중복제외)", "합계(유니온)"],
-        index=2,
-        horizontal=True
-    )
+    cohort = st.radio("어떤 세트를 추출할까요?", ["가입자", "구매자(가입중복제외)", "합계"], index=2, horizontal=True)
 
     if st.button("user_id 추출(CSV)"):
         try:
@@ -330,7 +318,8 @@ if not sel_df.empty:
             if len(codes) == 0:
                 st.info("선택된 매장이 없습니다.")
             else:
-                placeholders = ",".join(["%s"] * len(codes))
+                placeholders_codes = ",".join(["%s"] * len(codes))
+                placeholders_brands = ",".join(["%s"] * len(brands))
                 sale_dt_filter_uid = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
                 date_params_uid = [] if all_time else [str(buy_start), str(buy_end)]
 
@@ -344,11 +333,11 @@ WITH M AS (
   JOIN FNF.PRCS.DB_SHOP S
     ON A.joinstore__c = S.SHOP_ID
    AND A.joinbrand__c = S.BRD_CD
-  WHERE A.joinbrand__c = %s
-    AND S.SHOP_ID IN ({placeholders})
+  WHERE A.joinbrand__c IN ({placeholders_brands})
+    AND S.SHOP_ID IN ({placeholders_codes})
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
-    AND COALESCE(A.status_cd__c, '') <> 'D'
+    AND A.status_cd__c = 'R'
     AND A.{CID_COLUMN} IS NOT NULL
     AND LENGTH(TRIM(A.{CID_COLUMN})) > 0
 ),
@@ -363,12 +352,12 @@ P AS (
   JOIN FNF.CRM_SALESFORCEPROD.ACCOUNT A
     ON A.{CID_COLUMN} = SL.CUST_ID
    AND A.joinbrand__c = SL.BRD_CD
-  WHERE SL.BRD_CD = %s
-    AND S.SHOP_ID IN ({placeholders})
+  WHERE SL.BRD_CD IN ({placeholders_brands})
+    AND S.SHOP_ID IN ({placeholders_codes})
     {sale_dt_filter_uid}
     AND A.sleep_yn__c = 'N'
     AND A.recv_sms__c = 'Y'
-    AND COALESCE(A.status_cd__c, '') <> 'D'
+    AND A.status_cd__c = 'R'
     AND A.{CID_COLUMN} IS NOT NULL
     AND LENGTH(TRIM(A.{CID_COLUMN})) > 0
 ),
@@ -391,7 +380,8 @@ PO AS (
                     )
                 )
 
-                params_uid = [brand] + codes + [brand] + codes + date_params_uid
+                # params: brands + codes + brands + codes + dates
+                params_uid = brands + codes + brands + codes + date_params_uid
                 uid_df = run_query(sql_uid, tuple(params_uid))
 
                 if uid_df.empty:
@@ -405,7 +395,7 @@ PO AS (
                         file_name=(
                             "user_id_members.csv" if cohort.startswith("가입자")
                             else "user_id_purchasers_only.csv" if cohort.startswith("구매자")
-                            else "user_id_union.csv"
+                            else "user_id_total.csv"
                         ),
                         mime="text/csv"
                     )
@@ -413,7 +403,7 @@ PO AS (
             st.exception(e)
 
 st.caption(
-    "※ 화면엔 합계만 표시 · user_id(CID)는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / "
+    "※ 화면엔 합계만 표시 · user_id(CID)는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 상태코드 R만 포함 / "
     "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / 합계=가입 ∪ 구매(가입중복제외) / "
     "LMS 비용은 1건당 23.5원 기준 예상치"
 )
