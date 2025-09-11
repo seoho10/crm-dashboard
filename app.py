@@ -94,8 +94,9 @@ with st.expander("🔌 연결 테스트"):
 # 검색 UI
 # -----------------------------
 brand = st.radio("브랜드 선택", ["X", "M", "I"], index=0, horizontal=True)
-kw = st.text_input("매장 검색 키워드 (매장명/번호 일부, 공백·쉼표 복수 입력: 예) 대구, 강남, 501)").strip()
-mode = st.radio("검색 토큰 결합 방식", ["하나라도 포함(OR)", "모두 포함(AND)"], index=0, horizontal=True)
+
+# 안내 문구 변경
+kw = st.text_input("매장 관련 정보를 입력하세요! 지역, 매장명, 매장코드 등").strip()
 
 # 구매 집계 기간(구매자 집계에만 적용) + 전체기간 토글
 default_start = date.today() - timedelta(days=30)
@@ -121,8 +122,9 @@ if do_search:
         st.session_state.results = pd.DataFrame()
     else:
         try:
+            # 토큰 분해 (공백/쉼표), 내부 결합은 항상 OR
             tokens = [t.strip() for t in re.split(r"[,\s]+", kw) if t.strip()]
-            joiner = " OR " if mode.startswith("하나라도") else " AND "
+            joiner = " OR "
             conds, token_params = [], []
             for t in tokens:
                 conds.append("(S.SHOP_NM_SHORT ILIKE %s OR TO_VARCHAR(S.SHOP_ID) ILIKE %s)")
@@ -209,7 +211,16 @@ ORDER BY TOTAL_CNT DESC, MEMBER_CNT DESC, PURCHASER_CNT DESC
 results = st.session_state.results
 if not results.empty:
     st.subheader("검색 결과 (스토어코드 / 매장명 / 가입 / 구매(가입제외) / 합계)")
-    st.dataframe(results, use_container_width=True)
+
+    # ✅ 표시는 한글 라벨로
+    results_display = results.rename(
+        columns={
+            "member_cnt": "가입",
+            "purchaser_cnt": "구매(가입제외)",
+            "total_cnt": "합계",
+        }
+    )
+    st.dataframe(results_display, use_container_width=True)
 
     options = [
         f"{r.store_code} | {r.shop_name} (가입 {int(r.member_cnt):,} / 구매 {int(r.purchaser_cnt):,} / 합계 {int(r.total_cnt):,})"
@@ -244,13 +255,13 @@ if not results.empty:
         st.session_state.selected_df = st.session_state.selected_df[keep_mask]
 
 # -----------------------------
-# 누적 선택 & 합계 / CSV & USER_ID 추출(세트 선택)
+# 누적 선택 & 합계 / CSV & user_id 추출(세트 선택)
 # -----------------------------
 sel_df = st.session_state.selected_df
 if not sel_df.empty:
     st.subheader("누적 선택 매장")
 
-    # ===== 표는 한글 라벨로 노출 (가입/구매(가입제외)/합계) =====
+    # 표는 한글 라벨로 노출 (가입/구매(가입제외)/합계)
     display_df = sel_df.copy()
     display_df["가입"] = display_df["member_cnt"].astype(int)
     display_df["구매(가입제외)"] = display_df["purchaser_cnt"].astype(int)
@@ -304,7 +315,7 @@ if not sel_df.empty:
     )
 
     st.divider()
-    st.subheader("📤 선택 매장 USER_ID(CID) 추출")
+    st.subheader("📤 선택 매장 user_id(CID) 추출")
     cohort = st.radio(
         "어떤 세트를 추출할까요?",
         ["가입자", "구매자(가입중복제외)", "합계(유니온)"],
@@ -312,7 +323,7 @@ if not sel_df.empty:
         horizontal=True
     )
 
-    if st.button("USER_ID 추출(CSV)"):
+    if st.button("user_id 추출(CSV)"):
         try:
             codes = [str(c) for c in sel_df["store_code"].astype(str).tolist()]
             if len(codes) == 0:
@@ -371,11 +382,11 @@ PO AS (
 """
                     +
                     (
-                        "SELECT DISTINCT CID AS USER_ID FROM M"
+                        "SELECT DISTINCT CID AS user_id FROM M"
                         if cohort.startswith("가입자")
-                        else "SELECT DISTINCT CID AS USER_ID FROM PO"
+                        else "SELECT DISTINCT CID AS user_id FROM PO"
                         if cohort.startswith("구매자")
-                        else "SELECT DISTINCT CID AS USER_ID FROM (SELECT CID FROM M UNION ALL SELECT CID FROM PO) U"
+                        else "SELECT DISTINCT CID AS user_id FROM (SELECT CID FROM M UNION ALL SELECT CID FROM PO) U"
                     )
                 )
 
@@ -383,12 +394,12 @@ PO AS (
                 uid_df = run_query(sql_uid, tuple(params_uid))
 
                 if uid_df.empty:
-                    st.info("선택 조건에 해당하는 USER_ID가 없습니다.")
+                    st.info("선택 조건에 해당하는 user_id가 없습니다.")
                 else:
-                    st.write(f"USER_ID 개수: **{len(uid_df):,}**")
+                    st.write(f"user_id 개수: **{len(uid_df):,}**")
                     uid_csv = uid_df.to_csv(index=False).encode("utf-8-sig")
                     st.download_button(
-                        "USER_ID CSV 다운로드",
+                        "user_id CSV 다운로드",
                         data=uid_csv,
                         file_name=(
                             "user_id_members.csv" if cohort.startswith("가입자")
@@ -401,7 +412,7 @@ PO AS (
             st.exception(e)
 
 st.caption(
-    "※ 화면엔 합계만 표시 · USER_ID(CID) 는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / "
+    "※ 화면엔 합계만 표시 · user_id(CID)는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / "
     "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / 합계=가입 ∪ 구매(가입중복제외) / "
     "LMS 비용은 1건당 23.5원 기준 예상치"
 )
