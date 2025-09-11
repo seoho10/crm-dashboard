@@ -54,10 +54,10 @@ def get_connection():
     return snowflake.connector.connect(
         user=cfg["user"],
         password=cfg["password"],
-        account=cfg["account"],
-        warehouse=cfg["warehouse"],
-        database=cfg["database"],
-        schema=cfg["schema"],
+        account=cfg["account"],      # 예: cixxjbf-wp67697
+        warehouse=cfg["warehouse"],  # 예: DEV_WH
+        database=cfg["database"],    # 예: FNF
+        schema=cfg["schema"],        # 예: CRM_MEMBER
         role=cfg.get("role"),
     )
 
@@ -97,10 +97,9 @@ brand = st.radio("브랜드 선택", ["X", "M", "I"], index=0, horizontal=True)
 kw = st.text_input("매장 검색 키워드 (매장명/번호 일부, 공백·쉼표 복수 입력: 예) 대구, 강남, 501)").strip()
 mode = st.radio("검색 토큰 결합 방식", ["하나라도 포함(OR)", "모두 포함(AND)"], index=0, horizontal=True)
 
-# 구매 집계 기간(구매자 집계에만 적용)
+# 구매 집계 기간(구매자 집계에만 적용) + 전체기간 토글
 default_start = date.today() - timedelta(days=30)
 default_end = date.today()
-
 col1, col2 = st.columns([1, 2])
 with col1:
     all_time = st.checkbox("전체기간(제한 없음)", value=False)
@@ -108,7 +107,7 @@ with col2:
     buy_start, buy_end = st.date_input(
         "구매 기간(구매 인원 집계에 적용)",
         (default_start, default_end),
-        disabled=all_time  # 전체기간이면 비활성화
+        disabled=all_time
     )
 
 do_search = st.button("검색", type="primary")
@@ -131,7 +130,6 @@ if do_search:
                 token_params.extend([like, like])
             token_filter_sql = (f" AND ({joiner.join(conds)})") if conds else ""
 
-            # 기간 필터 SQL/파라미터 구성 (전체기간이면 SALE_DT 필터 미적용)
             sale_dt_filter_sql = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
             date_params = [] if all_time else [str(buy_start), str(buy_end)]
 
@@ -177,7 +175,7 @@ P AS (
     AND LENGTH(TRIM(A.{CID_COLUMN})) > 0
     {token_filter_sql}
 ),
-PO AS (
+PO AS ( -- Purchasers Only: 가입자(M)와 중복되지 않는 구매자
   SELECT P.SHOP_ID, P.SHOP_NAME, P.CID
   FROM P
   LEFT JOIN M
@@ -210,7 +208,7 @@ ORDER BY TOTAL_CNT DESC, MEMBER_CNT DESC, PURCHASER_CNT DESC
 # -----------------------------
 results = st.session_state.results
 if not results.empty:
-    st.subheader("검색 결과 (스토어코드 / 매장명 / 가입 / 구매[가입중복제외] / SUM)")
+    st.subheader("검색 결과 (스토어코드 / 매장명 / 가입 / 구매(가입제외) / 합계)")
     st.dataframe(results, use_container_width=True)
 
     options = [
@@ -252,31 +250,51 @@ sel_df = st.session_state.selected_df
 if not sel_df.empty:
     st.subheader("누적 선택 매장")
 
-    # 합계 행 + 상단 합계/비용 표시
+    # ===== 표는 한글 라벨로 노출 (가입/구매(가입제외)/합계) =====
+    display_df = sel_df.copy()
+    display_df["가입"] = display_df["member_cnt"].astype(int)
+    display_df["구매(가입제외)"] = display_df["purchaser_cnt"].astype(int)
+    display_df["합계"] = display_df["total_cnt"].astype(int)
+
+    # 합계(숫자)
     total_member = int(sel_df["member_cnt"].sum())
     total_buyer_only = int(sel_df["purchaser_cnt"].sum())
     total_sum = int(sel_df["total_cnt"].sum())
 
-    total_row = pd.DataFrame(
+    # 합계 행
+    sum_row = pd.DataFrame(
         {
             "store_code": ["합계"],
             "shop_name": ["-"],
-            "member_cnt": [total_member],
-            "purchaser_cnt": [total_buyer_only],
-            "total_cnt": [total_sum],
+            "가입": [total_member],
+            "구매(가입제외)": [total_buyer_only],
+            "합계": [total_sum],
         }
     )
-    sel_show = pd.concat([sel_df, total_row], ignore_index=True)
+
+    # 문자 발송비용 행 (합계 × 23.5원)
+    LMS_UNIT = 23.5
+    cost_row = pd.DataFrame(
+        {
+            "store_code": ["문자 발송비용(원)"],
+            "shop_name": ["-"],
+            "가입": [f"{total_member * LMS_UNIT:,.1f}"],
+            "구매(가입제외)": [f"{total_buyer_only * LMS_UNIT:,.1f}"],
+            "합계": [f"{total_sum * LMS_UNIT:,.1f}"],
+        }
+    )
+
+    render_cols = ["store_code", "shop_name", "가입", "구매(가입제외)", "합계"]
+    sel_show = pd.concat([display_df[render_cols], sum_row, cost_row], ignore_index=True)
     st.dataframe(sel_show, use_container_width=True)
 
-    st.success(f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}")
+    # 상단 요약 및 비용 총액 안내(텍스트)
+    st.success(
+        f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}"
+    )
+    st.info(f"💬 LMS 발송 비용(예상): 합계 {total_sum:,} × 23.5원 = **{total_sum * LMS_UNIT:,.1f}원**")
 
-    # ② LMS 발송 비용(23.5원 × 합계)
-    LMS_UNIT = 23.5
-    est_cost = total_sum * LMS_UNIT
-    st.info(f"💬 LMS 발송 비용(예상): {total_sum:,} × {LMS_UNIT}원 = **{est_cost:,.1f}원**")
-
-    # 선택 매장 요약 CSV
+    # 선택 매장 요약 CSV (원본 컬럼 유지)
     csv = sel_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "선택 매장 리스트 CSV",
@@ -301,8 +319,6 @@ if not sel_df.empty:
                 st.info("선택된 매장이 없습니다.")
             else:
                 placeholders = ",".join(["%s"] * len(codes))
-
-                # 기간 필터 SQL/파라미터 (검색과 동일한 all_time 로직 유지)
                 sale_dt_filter_uid = "" if all_time else "AND SL.SALE_DT BETWEEN %s AND %s"
                 date_params_uid = [] if all_time else [str(buy_start), str(buy_end)]
 
@@ -355,15 +371,14 @@ PO AS (
 """
                     +
                     (
-                        f"SELECT DISTINCT CID AS USER_ID FROM M"
+                        "SELECT DISTINCT CID AS USER_ID FROM M"
                         if cohort.startswith("가입자")
-                        else f"SELECT DISTINCT CID AS USER_ID FROM PO"
+                        else "SELECT DISTINCT CID AS USER_ID FROM PO"
                         if cohort.startswith("구매자")
                         else "SELECT DISTINCT CID AS USER_ID FROM (SELECT CID FROM M UNION ALL SELECT CID FROM PO) U"
                     )
                 )
 
-                # 파라미터: [brand] + codes(M) + [brand] + codes(P) + date_params_uid
                 params_uid = [brand] + codes + [brand] + codes + date_params_uid
                 uid_df = run_query(sql_uid, tuple(params_uid))
 
@@ -387,6 +402,6 @@ PO AS (
 
 st.caption(
     "※ 화면엔 합계만 표시 · USER_ID(CID) 는 CSV로만 제공 / 조건: 수신동의(Y) & 휴면(N) & 탈퇴(D) 제외 / "
-    "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / SUM=가입 ∪ 구매(가입중복제외) / "
+    "구매 인원은 설정 기간 내 구매 기준이며 가입자와 중복 제외 / 합계=가입 ∪ 구매(가입중복제외) / "
     "LMS 비용은 1건당 23.5원 기준 예상치"
 )
