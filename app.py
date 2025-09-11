@@ -91,14 +91,11 @@ with st.expander("🔌 연결 테스트"):
             st.exception(e)
 
 # -----------------------------
-# 검색 UI
+# 검색 UI (순서 변경: 브랜드 → 기간 → 키워드 → 검색)
 # -----------------------------
 brand = st.radio("브랜드 선택", ["X", "M", "I"], index=0, horizontal=True)
 
-# 안내 문구 변경
-kw = st.text_input("매장 관련 정보를 입력하세요! 지역, 매장명, 매장코드 등").strip()
-
-# 구매 집계 기간(구매자 집계에만 적용) + 전체기간 토글
+# 기간 먼저
 default_start = date.today() - timedelta(days=30)
 default_end = date.today()
 col1, col2 = st.columns([1, 2])
@@ -111,6 +108,10 @@ with col2:
         disabled=all_time
     )
 
+# 그 다음 키워드
+kw = st.text_input("매장 관련 정보를 입력하세요! 지역, 매장명, 매장코드 등").strip()
+
+# 검색 버튼
 do_search = st.button("검색", type="primary")
 
 # -----------------------------
@@ -212,7 +213,7 @@ results = st.session_state.results
 if not results.empty:
     st.subheader("검색 결과 (스토어코드 / 매장명 / 가입 / 구매(가입제외) / 합계)")
 
-    # ✅ 표시는 한글 라벨로
+    # 표시 라벨
     results_display = results.rename(
         columns={
             "member_cnt": "가입",
@@ -299,7 +300,7 @@ if not sel_df.empty:
     sel_show = pd.concat([display_df[render_cols], sum_row, cost_row], ignore_index=True)
     st.dataframe(sel_show, use_container_width=True)
 
-    # 상단 요약 및 비용 총액 안내(텍스트)
+    # 상단 요약 및 비용 총액
     st.success(
         f"✅ 총(가입): {total_member:,} | 🛒 총(구매, 가입중복제외): {total_buyer_only:,} | Σ 합계: {total_sum:,}"
     )
